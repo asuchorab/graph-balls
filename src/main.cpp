@@ -265,7 +265,7 @@ SetPartition process_graph_edges(
     // If can load result from the file, do that
     if (task_options.recompute
         || !try_partition_from_file(
-            graph.getNumVertices(), final_filename, classes)) {
+            graph_edges.getNumEdges(), final_filename, classes)) {
       // Else need to compute the result
       // If Allowed to load automorphism groups by options, do that
       // TODO: Can I get "automorphism edge partition"?
