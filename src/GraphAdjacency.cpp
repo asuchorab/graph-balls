@@ -60,7 +60,7 @@ bool get_csv_entry(std::istream& in, std::string* out) {
 
 void output_csv_quoted(std::ostream& out, const std::string& str) {
   bool need_quotes = false;
-  for (char c : str) {
+  for (char c: str) {
     if (c == '"' || c == ',' || c == '\n' || c == '\r') {
       need_quotes = true;
       break;
@@ -73,7 +73,7 @@ void output_csv_quoted(std::ostream& out, const std::string& str) {
   }
 
   out << '"';
-  for (char c : str) {
+  for (char c: str) {
     if (c == '"') {
       out << "\"\"";
     } else {
@@ -88,7 +88,7 @@ GraphAdjacency GraphAdjacency::loadFiles(
     const std::vector<const char*>& filenames) {
   GraphAdjacency ret;
   for (auto filename: filenames) {
-    std::ifstream ifs(filename);
+    std::ifstream ifs(filename, std::ios::binary);
     if (!ifs.good()) {
       throw std::runtime_error("Cannot open file " + std::string(filename));
     }
@@ -131,7 +131,7 @@ GraphAdjacency GraphAdjacency::loadFiles(
 }
 
 void GraphAdjacency::save(const char* filename) const {
-  std::ofstream ofs(filename);
+  std::ofstream ofs(filename, std::ios::binary);
   if (!ofs.good()) {
     throw std::runtime_error("Cannot open file " + std::string(filename));
   }
@@ -358,54 +358,85 @@ void GraphAdjacency::printFull(std::ostream& out) const {
 
 uint32_t GraphAdjacency::removeMultiEdges(bool replace_type) {
   uint32_t remove_count = 0;
-  for (uint32_t i = 0; i < getNumVertices(); ++i) {
-    auto& adj_in = adjacency_in[i];
+  std::vector<uint32_t> labels_buf;
+  for (uint32_t v_id = 0; v_id < getNumVertices(); ++v_id) {
+    auto& adj_in = adjacency_in[v_id];
     std::sort(
         adj_in.begin(), adj_in.end(),
         [](Adjacency a, Adjacency b) {
           return a.vertex_id < b.vertex_id;
         });
-    auto erase_from_other_node = [this, i](Adjacency a) {
+    auto erase_from_other_node = [this, v_id](Adjacency a) {
       auto& adj_out = adjacency_out[a.vertex_id];
       auto it = std::find_if(
           adj_out.begin(), adj_out.end(),
-          [i, label_id = a.edge_label_id](Adjacency a2) {
-            return a2.vertex_id == i && a2.edge_label_id == label_id;
+          [v_id, label_id = a.edge_label_id](Adjacency a2) {
+            return a2.vertex_id == v_id && a2.edge_label_id == label_id;
           });
       if (it == adj_out.end()) {
         throw std::runtime_error("Didn't find reverse remove");
       }
       adj_out.erase(it);
     };
-    auto add_reverse_to_other_node = [this, i](Adjacency a) {
+    auto find_reverse_in_other_node = [this, v_id](Adjacency a) {
       auto& adj_out = adjacency_out[a.vertex_id];
-      adj_out.emplace_back(i, a.edge_label_id);
+      auto it = std::find_if(
+          adj_out.begin(), adj_out.end(),
+          [v_id, label_id = a.edge_label_id](Adjacency a2) {
+            return a2.vertex_id == v_id && a2.edge_label_id == label_id;
+          });
+      if (it == adj_out.end()) {
+        throw std::runtime_error("Didn't find reverse to change");
+      }
+      return it;
     };
     uint32_t last_id = std::numeric_limits<uint32_t>::max();
-    uint32_t j = 0;
-    while (j < adj_in.size()) {
-      Adjacency adj = adj_in[j];
-      if (adj.vertex_id == last_id) {
-        remove_count++;
-        if (replace_type) {
-          auto& adj_prev = adj_in[j - 1];
-          auto label = getEdgeLabel(adj_prev.edge_label_id);
-          label += "_merge_";
-          label += getEdgeLabel(adj.edge_label_id);
-          uint32_t merge_id = addOrGetEdgeLabelId(label);
-          erase_from_other_node(adj_prev);
-          erase_from_other_node(adj);
-          adj_in.erase(adj_in.begin() + j);
-          adj_prev.edge_label_id = merge_id;
-          add_reverse_to_other_node(adj_prev);
-        } else {
-          erase_from_other_node(adj);
-          adj_in.erase(adj_in.begin() + j);
+    uint32_t adj_idx = 0;
+    while (true) {
+      // On end of array or when new vertex id is noticed, process
+      if (adj_idx == adj_in.size() || adj_in[adj_idx].vertex_id != last_id) {
+        // If accumulated more than 1 past labels of one vertex,
+        // do the merge
+        if (labels_buf.size() > 1) {
+          remove_count += labels_buf.size() - 1;
+          uint32_t new_label_id;
+          if (replace_type) {
+            std::sort(labels_buf.begin(), labels_buf.end());
+            std::string new_label = getEdgeLabel(labels_buf[0]);
+            for (uint32_t i = 1; i < labels_buf.size(); ++i) {
+              new_label += "_merge_";
+              new_label += getEdgeLabel(labels_buf[i]);
+            }
+            new_label_id = addOrGetEdgeLabelId(new_label);
+          } else {
+            new_label_id = labels_buf[0];
+          }
+          uint32_t begin_idx = adj_idx - labels_buf.size();
+          // Erase corresponding adjacencies from other node
+          for (uint32_t i = adj_idx - 1; i > begin_idx; --i) {
+            erase_from_other_node(adj_in[i]);
+          }
+          // Erase range (begin_idx+1, adj_idx) from this, leaving only one
+          // edge with the same destination
+          adj_in.erase(adj_in.begin() + (begin_idx + 1), adj_in.begin() + adj_idx);
+          // Adjust currently processed index to take the removal into account
+          adj_idx -= adj_idx - begin_idx - 1;
+          // Make sure the new edge label is consistent on both ends
+          auto& adj_begin = adj_in[begin_idx];
+          auto other = find_reverse_in_other_node(adj_in[begin_idx]);
+          other->edge_label_id = new_label_id;
+          adj_begin.edge_label_id = new_label_id;
         }
-      } else {
-        last_id = adj.vertex_id;
-        j++;
+        labels_buf.clear();
       }
+      // Exit if reached end of array
+      if (adj_idx >= adj_in.size()) {
+        break;
+      }
+      Adjacency adj = adj_in[adj_idx];
+      labels_buf.push_back(adj.edge_label_id);
+      last_id = adj.vertex_id;
+      adj_idx++;
     }
   }
   return remove_count;

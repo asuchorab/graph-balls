@@ -1,27 +1,22 @@
 //
-// Created by Rutio on 2024-07-21.
+// Created by Rutio on 2025-11-24.
 //
 
-#include "GraphPartitioningThreadPool.h"
-#include <algorithm>
+#include "SetPartitioningThreadPool.h"
 #include <sstream>
-#include <iostream>
-
-#include "GraphPartitioning.h"
 
 namespace graphballs {
 
-SimplePartitionThreadPool::SimplePartitionThreadPool(
-    const GraphAdjacency& graph,
-    const CheckBallIsomorphismOptions& options)
-  : graph(graph),
-    options(options),
-    partition_class_map(graph.getNumVertices()),
-    ignore_for_checking(graph.getNumVertices()),
-    graph_size(graph.getNumVertices()) {
+SetPartitioningThreadPool::SetPartitioningThreadPool(
+    uint32_t n, EquivalenceFun&& equiv)
+  : equiv(std::move(equiv)),
+    partition_map(n),
+    ignore_for_checking(n),
+    num_elems(n) {
 }
 
-void SimplePartitionThreadPool::setInitialPartition(const GraphPartition& part) {
+void SetPartitioningThreadPool::setInitialPartition(
+    const SetPartition& part) {
   for (auto& c: part) {
     uint32_t min_idx = std::numeric_limits<uint32_t>::max();
     for (uint32_t idx: c) {
@@ -36,35 +31,51 @@ void SimplePartitionThreadPool::setInitialPartition(const GraphPartition& part) 
   }
 }
 
-void SimplePartitionThreadPool::start(uint32_t num_threads) {
+void SetPartitioningThreadPool::start(uint32_t num_threads) {
   threads.reserve(num_threads + 1);
   for (uint32_t i = 0; i < num_threads; ++i) {
-    threads.emplace_back(&SimplePartitionThreadPool::threadFunction, this);
+    threads.emplace_back(&SetPartitioningThreadPool::threadFunction, this);
   }
-  threads.emplace_back(&SimplePartitionThreadPool::mergerThreadFunction, this);
+  threads.emplace_back(&SetPartitioningThreadPool::mergerThreadFunction, this);
 }
 
-void SimplePartitionThreadPool::awaitCompletion() {
+void SetPartitioningThreadPool::awaitCompletion() {
   for (auto& thread: threads) {
     thread.join();
   }
   threads.clear();
 }
 
-uint32_t SimplePartitionThreadPool::getRemainingChecks() const {
-  return graph_size - std::max(std::min(elem_result_current, graph_size), 1u);
+uint32_t SetPartitioningThreadPool::getRemainingChecks() const {
+  return num_elems - std::max(std::min(elem_result_current, num_elems), 1u);
 }
 
-bool SimplePartitionThreadPool::isFinished() const {
-  return elem_result_current >= graph_size;
+bool SetPartitioningThreadPool::isFinished() const {
+  return elem_result_current >= num_elems;
 }
 
-GraphPartition& SimplePartitionThreadPool::getPartition() {
-  return partition_classes;
+SetPartition& SetPartitioningThreadPool::getPartition() {
+  return partition_groups;
 }
 
-void SimplePartitionThreadPool::threadFunction() {
-  auto buffer = std::make_unique<CheckBallIsomorphismBuffer>();
+std::optional<uint32_t> SetPartitioningThreadPool::getJobData() {
+  std::lock_guard lock(job_dispatch_mutex);
+  while (elem_process_current < num_elems) {
+    if (!ignore_for_checking[elem_process_current]) {
+      return elem_process_current++;
+    }
+    elem_process_current++;
+  }
+  return std::nullopt;
+}
+
+void SetPartitioningThreadPool::giveJobResults(
+    uint32_t result_index, uint32_t origin_index) {
+  std::lock_guard lock(result_mutex);
+  batch_results[origin_index] = result_index;
+}
+
+void SetPartitioningThreadPool::threadFunction() {
   while (true) {
     std::optional<uint32_t> origin_index = getJobData();
     if (!origin_index) {
@@ -75,9 +86,7 @@ void SimplePartitionThreadPool::threadFunction() {
       if (ignore_for_checking[i]) {
         continue;
       }
-      if (check_ball_isomorphism(
-          graph, *origin_index, i,
-          stats, options, buffer.get())) {
+      if (equiv(*origin_index, i)) {
         job_result = i;
         ignore_for_checking[*origin_index] = true;
         break;
@@ -87,27 +96,9 @@ void SimplePartitionThreadPool::threadFunction() {
   }
 }
 
-std::optional<uint32_t> SimplePartitionThreadPool::getJobData() {
-  std::lock_guard lock(job_dispatch_mutex);
-  while (elem_process_current < graph_size) {
-    if (!ignore_for_checking[elem_process_current]) {
-      return elem_process_current++;
-    }
-    elem_process_current++;
-  }
-  return std::nullopt;
-}
-
-void SimplePartitionThreadPool::giveJobResults(
-    uint32_t result_index,
-    uint32_t origin_index) {
-  std::lock_guard lock(result_mutex);
-  batch_results[origin_index] = result_index;
-}
-
-void SimplePartitionThreadPool::mergerThreadFunction() {
-  while (elem_result_current < graph_size) {
-    while (elem_result_current < graph_size) {
+void SetPartitioningThreadPool::mergerThreadFunction() {
+  while (elem_result_current < num_elems) {
+    while (elem_result_current < num_elems) {
       uint32_t result_index; {
         std::lock_guard lock(result_mutex);
         auto it = batch_results.begin();
@@ -118,13 +109,13 @@ void SimplePartitionThreadPool::mergerThreadFunction() {
         batch_results.erase(it);
       }
       if (elem_result_current == result_index) {
-        partition_class_map[elem_result_current] = (uint32_t) partition_classes.size();
-        partition_classes.emplace_back();
-        partition_classes.back().emplace_back(elem_result_current);
+        partition_map[elem_result_current] = (uint32_t) partition_groups.size();
+        partition_groups.emplace_back();
+        partition_groups.back().emplace_back(elem_result_current);
       } else {
-        uint32_t class_index = partition_class_map[result_index];
-        partition_class_map[elem_result_current] = class_index;
-        partition_classes[class_index].emplace_back(elem_result_current);
+        uint32_t group_index = partition_map[result_index];
+        partition_map[elem_result_current] = group_index;
+        partition_groups[group_index].emplace_back(elem_result_current);
       }
       elem_result_current++;
     }
@@ -132,39 +123,53 @@ void SimplePartitionThreadPool::mergerThreadFunction() {
   }
 }
 
+
 inline std::string get_branch_label(uint32_t id, uint32_t radius) {
   std::ostringstream ss;
   ss << "B_" << id << "_r" << radius;
   return ss.str();
 }
 
-inline std::string get_leaf_label(const GraphAdjacency& graph, uint32_t id) {
-  return "L_" + graph.getVertexLabel(id);
+inline std::string get_leaf_label(uint32_t id) {
+  return "L_" + std::to_string(id);
 }
 
-HierarchicalThreadPool::HierarchicalThreadPool(
-    const GraphAdjacency& graph,
-    const CheckBallIsomorphismOptions& options)
-  : graph(graph),
-    options(options),
-    current_partition_map(graph.getNumVertices()),
-    inner_classes_map(graph.getNumVertices()),
-    aut_partition_map(graph.getNumVertices()),
-    ignore_for_checking(graph.getNumVertices()),
-    ignore_for_checking_init(graph.getNumVertices()),
+SetHierarchicalThreadPool::SetHierarchicalThreadPool(
+    uint32_t n, EquivIndexFun&& equiv_index_fun)
+  : current_partition_map(n),
+    inner_classes_map(n),
+    max_partition_map(n),
+    ignore_for_checking(n),
+    ignore_for_checking_init(n),
+    leaf_name_generator(get_leaf_label),
+    branch_name_generator(get_branch_label),
+    equiv_index_fun(equiv_index_fun),
+    num_elems(n),
     next_class_id(1),
     next_branch_id(1) {
-  NodeVec begin_nodees(graph.getNumVertices());
-  for (uint32_t i = 0; i < graph.getNumVertices(); ++i) {
-    begin_nodees[i] = i;
-    aut_partition_map[i] = i;
+  IdVec begin_elems(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    begin_elems[i] = i;
+    max_partition_map[i] = i;
   }
-  branches.emplace_back(std::move(begin_nodees), 0);
-  out_graph.addOrGetVertexId(get_branch_label(0, 0));
-  out_graph.addOrGetEdgeLabelId("h_over");
+  branches.emplace_back(std::move(begin_elems), 0);
 }
 
-void HierarchicalThreadPool::setInitialPartition(const GraphPartition& part) {
+void SetHierarchicalThreadPool::setLeafNameGenerator(
+    std::function<std::string(uint32_t)>&& fun) {
+  leaf_name_generator = std::move(fun);
+}
+
+void SetHierarchicalThreadPool::setBranchNameGenerator(
+    std::function<std::string(uint32_t, uint32_t)>&& fun) {
+  branch_name_generator = std::move(fun);
+}
+
+void SetHierarchicalThreadPool::setOutRelationName(const std::string& name) {
+  out_relation_name = name;
+}
+
+void SetHierarchicalThreadPool::setMaximalPartition(const SetPartition& part) {
   for (auto& c: part) {
     uint32_t min_idx = std::numeric_limits<uint32_t>::max();
     for (uint32_t idx: c) {
@@ -172,29 +177,41 @@ void HierarchicalThreadPool::setInitialPartition(const GraphPartition& part) {
     }
     for (uint32_t idx: c) {
       if (idx != min_idx) {
-        aut_partition_map[idx] = min_idx;
+        max_partition_map[idx] = min_idx;
       }
     }
   }
   prepareBranch(branches[0]);
-  using_automorphism = true;
+  using_maximal = true;
 }
 
-void HierarchicalThreadPool::startIteration(uint32_t num_threads) {
+void SetHierarchicalThreadPool::setMaximumRelationIndex(uint32_t n) {
+  max_relation = n;
+}
+
+void SetHierarchicalThreadPool::startIteration(uint32_t num_threads) {
+  if (!was_out_graph_initialized) {
+    was_out_graph_initialized = true;
+    out_graph.addOrGetVertexId(branch_name_generator(0, 0));
+    out_graph.addOrGetEdgeLabelId(out_relation_name);
+    for (uint32_t i = 0; i < num_elems; ++i) {
+      out_graph.addOrGetVertexId(leaf_name_generator(i));
+    }
+  }
   threads.reserve(num_threads);
   for (uint32_t i = 0; i < num_threads; ++i) {
-    threads.emplace_back(&HierarchicalThreadPool::threadFunction, this);
+    threads.emplace_back(&SetHierarchicalThreadPool::threadFunction, this);
   }
 }
 
-void HierarchicalThreadPool::awaitIterationCompletion() {
+void SetHierarchicalThreadPool::awaitIterationCompletion() {
   for (auto& thread: threads) {
     thread.join();
   }
   threads.clear();
 }
 
-uint32_t HierarchicalThreadPool::getNumNodesInIteration() const {
+uint32_t SetHierarchicalThreadPool::getNumElemsInIteration() const {
   uint32_t result = 0;
   for (auto& branch: branches) {
     result += (uint32_t) branch.nodes.size();
@@ -202,7 +219,7 @@ uint32_t HierarchicalThreadPool::getNumNodesInIteration() const {
   return result;
 }
 
-uint32_t HierarchicalThreadPool::getRemainingChecks() const {
+uint32_t SetHierarchicalThreadPool::getRemainingChecks() const {
   uint32_t result = 0;
   for (auto& branch: branches) {
     uint32_t size = (uint32_t) branch.nodes.size();
@@ -213,7 +230,7 @@ uint32_t HierarchicalThreadPool::getRemainingChecks() const {
 }
 
 std::pair<uint32_t, double>
-HierarchicalThreadPool::getRemainingAndProgress() const {
+SetHierarchicalThreadPool::getRemainingAndProgress() const {
   double done_sum = 0.f;
   double total_sum = 0.f;
   uint32_t remaining_sum = 0;
@@ -228,7 +245,7 @@ HierarchicalThreadPool::getRemainingAndProgress() const {
   return {remaining_sum, done_sum / total_sum};
 }
 
-std::string HierarchicalThreadPool::getThreadSummary() {
+std::string SetHierarchicalThreadPool::getThreadSummary() {
   std::stringstream ss;
   bool begin = true;
   for (size_t i = 0; i < branches.size(); ++i) {
@@ -245,46 +262,38 @@ std::string HierarchicalThreadPool::getThreadSummary() {
   return ss.str();
 }
 
-bool HierarchicalThreadPool::isIterationFinished() const {
+bool SetHierarchicalThreadPool::isIterationFinished() const {
   return finished_iteration;
 }
 
-uint32_t HierarchicalThreadPool::getCurrentRadius() const {
-  return current_radius;
+uint32_t SetHierarchicalThreadPool::getCurrentIndex() const {
+  return current_relation;
 }
 
-uint32_t HierarchicalThreadPool::getNumTotalBranches() const {
+uint32_t SetHierarchicalThreadPool::getNumTotalBranches() const {
   return next_branch_id;
 }
 
-void HierarchicalThreadPool::prepareNextIteration() {
+void SetHierarchicalThreadPool::prepareNextIteration() {
   finished_iteration = false;
   branches.clear();
   branches.swap(new_branches);
-  current_radius++;
-  // for (auto it = degrees_cache.begin(); it != degrees_cache.end();) {
-  //   if (it->second < current_radius) {
-  //     it = degrees_cache.erase(it);
-  //   } else {
-  //     ++it;
-  //   }
-  // }
+  current_relation++;
 }
 
-bool HierarchicalThreadPool::canContinue() const {
+bool SetHierarchicalThreadPool::canContinue() const {
   return !branches.empty();
 }
 
-const GraphPartitionMap& HierarchicalThreadPool::getCurrentPartition() const {
+const SetPartitionMap& SetHierarchicalThreadPool::getCurrentPartition() const {
   return current_partition_map;
 }
 
-GraphAdjacency& HierarchicalThreadPool::getResultGraph() {
+GraphAdjacency& SetHierarchicalThreadPool::getResultGraph() {
   return out_graph;
 }
 
-void HierarchicalThreadPool::threadFunction() {
-  auto buffer = std::make_unique<CheckBallIsomorphismBuffer>();
+void SetHierarchicalThreadPool::threadFunction() {
   while (true) {
     std::optional<ThreadJobData> data = getJobData();
     if (data) {
@@ -299,7 +308,7 @@ void HierarchicalThreadPool::threadFunction() {
             continue;
           }
           if (isIndistinguishableCached(
-              checked_index, origin_index, current_radius, buffer.get())) {
+              checked_index, origin_index, current_relation)) {
             job_result = checked_index;
             ignore_for_checking[origin_index] = true;
             break;
@@ -320,8 +329,8 @@ void HierarchicalThreadPool::threadFunction() {
   }
 }
 
-std::optional<HierarchicalThreadPool::ThreadJobData>
-HierarchicalThreadPool::getJobData() {
+std::optional<SetHierarchicalThreadPool::ThreadJobData>
+SetHierarchicalThreadPool::getJobData() {
   std::lock_guard lock(job_dispatch_mutex);
   bool all_done = true;
   for (uint8_t allow_nonempty = 0; allow_nonempty < 2; ++allow_nonempty) {
@@ -356,7 +365,7 @@ HierarchicalThreadPool::getJobData() {
   return std::nullopt;
 }
 
-void HierarchicalThreadPool::giveJobResults(
+void SetHierarchicalThreadPool::giveJobResults(
     const ThreadJobData& job_data, uint32_t result) {
   auto& branch = branches[job_data.branch_id];
   std::lock_guard lock(results_mutex);
@@ -366,23 +375,23 @@ void HierarchicalThreadPool::giveJobResults(
   catchUpBranchResults(branch);
 }
 
-void HierarchicalThreadPool::prepareBranch(BranchData& branch) {
+void SetHierarchicalThreadPool::prepareBranch(BranchData& branch) {
   for (uint32_t i = 0; i < branch.nodes.size(); ++i) {
     uint32_t node_idx = branch.nodes[i];
-    if (aut_partition_map[node_idx] == node_idx) {
+    if (max_partition_map[node_idx] == node_idx) {
       ignore_for_checking[node_idx] = false;
     } else {
       ignore_for_checking[node_idx] = true;
-      branch.batch_results[i] = aut_partition_map[node_idx];
+      branch.batch_results[i] = max_partition_map[node_idx];
       branch.num_results++;
     }
   }
 }
 
-void HierarchicalThreadPool::finalizeBranch(BranchData& branch) {
+void SetHierarchicalThreadPool::finalizeBranch(BranchData& branch) {
   catchUpBranchResults(branch);
   std::lock_guard lock(out_graph_mutex);
-  if (branch.inner_classes.size() > 1 || !sameAutomophicGroup(branch.nodes)) {
+  if (branch.inner_classes.size() > 1 || !sameMaximalGroup(branch.nodes)) {
     for (uint32_t i = 0; i < branch.inner_classes.size(); ++i) {
       auto& inner_class = branch.inner_classes[i];
       if (i > 0) {
@@ -392,21 +401,19 @@ void HierarchicalThreadPool::finalizeBranch(BranchData& branch) {
         }
       }
       uint32_t b_idx = out_graph.addOrGetVertexId(
-          get_branch_label(next_branch_id++, current_radius));
+          get_branch_label(next_branch_id++, current_relation));
       out_graph.addEdge(branch.parent_index, b_idx, 0);
       new_branches.emplace_back(std::move(inner_class), b_idx);
       prepareBranch(new_branches.back());
     }
   } else {
     for (uint32_t idx: branch.nodes) {
-      uint32_t l_idx = out_graph.addOrGetVertexId(
-          graph.getVertexLabel(idx));
-      out_graph.addEdge(branch.parent_index, l_idx, 0);
+      out_graph.addEdge(branch.parent_index, idx, 0);
     }
   }
 }
 
-void HierarchicalThreadPool::catchUpBranchResults(BranchData& branch) {
+void SetHierarchicalThreadPool::catchUpBranchResults(BranchData& branch) {
   while (branch.next_result_idx < branch.nodes.size()) {
     uint32_t elem = branch.nodes[branch.next_result_idx];
     uint32_t result;
@@ -434,17 +441,16 @@ void HierarchicalThreadPool::catchUpBranchResults(BranchData& branch) {
   }
 }
 
-bool HierarchicalThreadPool::sameAutomophicGroup(const NodeVec& nodes) {
-  if (using_automorphism) {
-    uint32_t id = aut_partition_map[nodes[0]];
+bool SetHierarchicalThreadPool::sameMaximalGroup(const IdVec& nodes) {
+  if (using_maximal) {
+    uint32_t id = max_partition_map[nodes[0]];
     for (uint32_t i = 1; i < nodes.size(); ++i) {
-      if (aut_partition_map[nodes[i]] != id) {
+      if (max_partition_map[nodes[i]] != id) {
         return false;
       }
     }
     return true;
   } else {
-    CheckBallIsomorphismBuffer temp_buf;
     uint32_t origin_idx = nodes[0];
     for (unsigned int node_idx: nodes) {
       if (!ignore_for_checking[node_idx]) {
@@ -454,73 +460,49 @@ bool HierarchicalThreadPool::sameAutomophicGroup(const NodeVec& nodes) {
     }
     for (unsigned int node_idx: nodes) {
       if (node_idx != origin_idx
-          && !isInSameAutGroupCachedCompute(origin_idx, node_idx, &temp_buf))
+          && !isInSameMaxGroupCached(origin_idx, node_idx))
         return false;
     }
     return true;
   }
 }
 
-bool HierarchicalThreadPool::isIndistinguishableCached(
-    uint32_t node1, uint32_t node2, uint32_t radius,
-    CheckBallIsomorphismBuffer* buf) {
-  if (node1 > node2) {
-    std::swap(node1, node2);
+bool SetHierarchicalThreadPool::isIndistinguishableCached(
+    uint32_t elem1, uint32_t elem2, uint32_t index) {
+  if (elem1 > elem2) {
+    std::swap(elem1, elem2);
   }
-  uint64_t cache_index = ((uint64_t) node1 << 32) | (uint64_t) node2; {
-    //
+  uint64_t cache_index = ((uint64_t) elem1 << 32) | (uint64_t) elem2;
+  // Try to find an already computed value
+  {
     std::lock_guard lock(cache_mutex);
     auto it = degrees_cache.find(cache_index);
     if (it != degrees_cache.end()) {
-      return it->second >= radius;
+      return it->second >= index;
     }
   }
-  uint32_t deg = get_ball_indistinguishability(
-      graph, node1, node2, stats, options, buf);
-  if (deg > radius) {
+  // Otherwise compute it
+  uint32_t deg = equiv_index_fun(elem1, elem2);
+  if (deg > index) {
     std::lock_guard lock(cache_mutex);
     degrees_cache.emplace(cache_index, deg);
   }
-  return deg >= radius;
+  return deg >= index;
 }
 
-
-bool HierarchicalThreadPool::isInSameAutGroupCachedCompute(
-    uint32_t node1, uint32_t node2, CheckBallIsomorphismBuffer* buf) {
-  if (node1 > node2) {
-    std::swap(node1, node2);
+bool SetHierarchicalThreadPool::isInSameMaxGroupCached(
+    uint32_t elem1, uint32_t elem2) {
+  if (elem1 > elem2) {
+    std::swap(elem1, elem2);
   }
-  uint64_t cache_index = ((uint64_t) node1 << 32) | (uint64_t) node2; {
-    std::lock_guard lock(cache_mutex);
-    auto it = degrees_cache.find(cache_index);
-    if (it != degrees_cache.end()) {
-      return it->second >= options.radius;
-    }
-  }
-  auto new_options = options;
-  new_options.radius = std::numeric_limits<uint32_t>::max();
-  bool is_aut = check_ball_isomorphism(
-      graph, node1, node2, stats, new_options, buf);
-  std::cout << "Triggered compute " + std::to_string(node1) + ", " + std::to_string(node2) + '\n';
-  if (is_aut) {
-    std::lock_guard lock(cache_mutex);
-    degrees_cache.emplace(cache_index, std::numeric_limits<uint32_t>::max());
-  }
-  return is_aut;
-}
-
-bool HierarchicalThreadPool::isInSameAutGroupCached(
-    uint32_t node1, uint32_t node2) {
-  if (node1 > node2) {
-    std::swap(node1, node2);
-  }
-  uint64_t cache_index = ((uint64_t) node1 << 32) | (uint64_t) node2;
+  uint64_t cache_index = ((uint64_t) elem1 << 32) | (uint64_t) elem2;
   std::lock_guard lock(cache_mutex);
   auto it = degrees_cache.find(cache_index);
   if (it != degrees_cache.end()) {
-    return it->second >= options.radius;
+    return it->second >= max_relation;
   }
-  return false;
+  // Unreachable as far as I can tell
+  throw std::runtime_error("Not in cache");
 }
 
 }

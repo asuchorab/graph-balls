@@ -2,7 +2,6 @@
 #include <vector>
 #include <GraphAdjacency.h>
 #include <GraphPartitioning.h>
-#include <GraphPartitioningThreadPool.h>
 #include <chrono>
 #include <fstream>
 #include <tclap/CmdLine.h>
@@ -32,16 +31,16 @@ std::string get_radius_filename(const std::string& prefix, uint32_t radius) {
 
 // Load or compute partition by automorphism,
 // or don't, depending on whether the options permit that
-GraphPartition load_aut_if_possible(
+SetPartition load_aut_if_possible(
     const GraphAdjacency& graph, const std::string& corrected_prefix,
     const GraphComputeOptions& compute_options,
     const GraphTaskOptions& task_options) {
-  GraphPartition aut_classes;
+  SetPartition aut_classes;
   if (!task_options.no_automorphisms) {
     std::string automorphism_filename = get_aut_filename(corrected_prefix);
     if (task_options.recompute_automorphism
-        || !try_partition_from_file(graph, automorphism_filename,
-                                    aut_classes)) {
+        || !try_partition_from_file(
+            graph.getNumVertices(), automorphism_filename, aut_classes)) {
       // Else need to compute the automorphism groups
       // If allowed to use bliss for automorphism, compute it
       auto time_start = std::chrono::high_resolution_clock::now();
@@ -67,13 +66,13 @@ GraphPartition load_aut_if_possible(
 // Print metrics after computation of the options permit
 void print_metrics_if_possible(
     const GraphAdjacency& graph,
-    const GraphPartition& classes,
+    const SetPartition& classes,
     CheckBallIsomorphismStats& stats,
     const GraphComputeOptions& compute_options,
     const GraphTaskOptions& task_options) {
   if (!task_options.print_no_metrics) {
     if (task_options.print_class_data) {
-      std::cout << PartitionFullLabels(graph, classes);
+      std::cout << NodePartitionFullLabels(graph, classes);
     }
     std::cout << PartitionOverview(
         classes, !compute_options.verbose || !compute_options.print_partition);
@@ -108,7 +107,7 @@ std::string get_corrected_prefix(
 
 // Choose the right computation task, depending on options
 // compute or load results of computation
-GraphPartition process_graph(
+SetPartition process_graph(
     const GraphAdjacency& graph, const std::string& filename_prefix,
     const CheckBallIsomorphismOptions& options,
     const GraphComputeOptions& compute_options,
@@ -145,7 +144,7 @@ GraphPartition process_graph(
   // all possible radii at once, reducing amount of redundant computation
   if (task_options.hierarchy) {
     // Load automorphism partition
-    GraphPartition aut_classes = load_aut_if_possible(
+    SetPartition aut_classes = load_aut_if_possible(
         graph, corrected_prefix, compute_options, task_options);
 
     // The main chunk of computation,
@@ -153,15 +152,15 @@ GraphPartition process_graph(
         graph, aut_classes, compute_options, options, &stats,
         // Partition callback for each radius, to save the results
         [&corrected_prefix, &graph, &task_options, &compute_options](
-        const GraphPartitionMap& partition_map, uint32_t radius) {
+        const SetPartitionMap& partition_map, uint32_t radius) {
           // Save partition by given radius to an apropriately named file
-          GraphPartition partition = partition_from_map(partition_map);
+          SetPartition partition = partition_from_map(partition_map);
           std::string filename = get_radius_filename(corrected_prefix, radius);
 
           // Print info if necessary
           if (!task_options.print_no_metrics) {
             if (task_options.print_class_data) {
-              std::cout << PartitionFullLabels(graph, partition);
+              std::cout << NodePartitionFullLabels(graph, partition);
             }
             std::cout << PartitionOverview(
                 partition, !compute_options.verbose
@@ -185,14 +184,15 @@ GraphPartition process_graph(
   } else {
     // Simple partition computation, not hierarchical,
     // generally slower as a whole, makes use of many of the same functions
-    GraphPartition classes;
+    SetPartition classes;
 
     // If can load result from the file, do that
     if (task_options.recompute
-        || !try_partition_from_file(graph, final_filename, classes)) {
+        || !try_partition_from_file(
+            graph.getNumVertices(), final_filename, classes)) {
       // Else need to compute the result
       // If Allowed to load automorphism groups by options, do that
-      GraphPartition aut_classes = load_aut_if_possible(
+      SetPartition aut_classes = load_aut_if_possible(
           graph, corrected_prefix, compute_options, task_options);
 
       // If radius unspecified and the automorphism is available, just use it
@@ -219,6 +219,79 @@ GraphPartition process_graph(
   }
 }
 
+SetPartition process_graph_edges(
+    const GraphAdjacency& graph, const std::string& filename_prefix,
+    const CheckBallIsomorphismOptions& options,
+    const GraphComputeOptions& compute_options,
+    const GraphTaskOptions& task_options) {
+  // Print info if required by options
+  if (compute_options.verbose) {
+    graph.printBasicInfo(std::cout);
+  }
+
+  // Generate the right filename prefix for the task
+  std::string corrected_prefix = get_corrected_prefix(
+      filename_prefix, options, task_options);
+  std::string final_filename;
+  if ((int) options.radius < 0) {
+    final_filename = get_aut_filename(corrected_prefix);
+  } else {
+    final_filename = get_radius_filename(corrected_prefix, options.radius);
+  }
+
+  // Generate file names for associated files
+  std::string labels_filename = filename_prefix + "_labels.txt";
+  std::string hierarchy_filename = filename_prefix + "_hierarchy.csv";
+
+  // Generate a file for mapping numerical ids to node labels
+  // for the graph
+  GraphEnhancedEdgeRepr graph_edges(graph);
+  verify_file_output(edge_labels_to_file(graph_edges, labels_filename.c_str()),
+                     labels_filename, "Error saving label file ");
+
+  CheckBallIsomorphismStats stats;
+
+  // Hierarchical computation
+  // It is generally a faster mode of computation, splitting the nodes into
+  // a topological hierarchy, it allows processing distinguishability by
+  // all possible radii at once, reducing amount of redundant computation
+  if (task_options.hierarchy) {
+    throw std::runtime_error("Not implemented");
+  } else {
+    // Simple partition computation, not hierarchical,
+    // generally slower as a whole, makes use of many of the same functions
+    SetPartition classes;
+
+    // If can load result from the file, do that
+    if (task_options.recompute
+        || !try_partition_from_file(
+            graph.getNumVertices(), final_filename, classes)) {
+      // Else need to compute the result
+      // If Allowed to load automorphism groups by options, do that
+      // TODO: Can I get "automorphism edge partition"?
+      // GraphPartition aut_classes = load_aut_if_possible(
+      //     graph, corrected_prefix, compute_options, task_options);
+
+      // classes = partition_graph_edges(
+      //     graph_edges, compute_options.verbose, options, &stats);
+      classes = partition_graph_edges_multithread(
+          graph_edges, {}, compute_options, options, &stats);
+
+      // Save to file
+      verify_file_output(
+          classes_to_file(classes, final_filename.c_str()),
+          final_filename, "Error saving output partition file ");
+    } else if (compute_options.verbose) {
+      std::cout << "Loaded precomputed partition\n" << std::flush;
+    }
+
+    // Print info if necessary
+    print_metrics_if_possible(
+        graph, classes, stats, compute_options, task_options);
+    return classes;
+  }
+}
+
 // Process graph split by edge types,
 // this kind of computation was an old idea, is very computationally
 // intensive, and will not be further developed
@@ -232,7 +305,7 @@ void process_split_by_edges(
     std::cout << "Number of distinct edge labels: " << graph.getNumEdgeLabels()
         << '\n' << std::flush;
   }
-  GraphPartition intersection;
+  SetPartition intersection;
   GraphTaskOptions mod_task_options = task_options;
   mod_task_options.print_no_metrics = true;
   for (uint32_t i = 0; i < graph.getNumEdgeLabels(); ++i) {
@@ -243,7 +316,7 @@ void process_split_by_edges(
     GraphAdjacency filtered_graph = graph.filterEdges(i);
     std::string label_filename_prefix =
         filename_prefix + "_label" + std::to_string(i);
-    GraphPartition label_result = process_graph(
+    SetPartition label_result = process_graph(
         filtered_graph, label_filename_prefix,
         options, compute_options, mod_task_options);
     if (intersection.empty()) {
@@ -257,7 +330,7 @@ void process_split_by_edges(
   }
   if (!task_options.print_no_metrics) {
     if (task_options.print_class_data) {
-      std::cout << PartitionFullLabels(graph, intersection);
+      std::cout << NodePartitionFullLabels(graph, intersection);
     }
     std::cout << PartitionOverview(
         intersection, !compute_options.verbose
@@ -287,7 +360,7 @@ std::string escape_filename(const char* filename) {
 bool generate_summary(
     const std::vector<std::string>& filenames,
     const char* output_filename) {
-  std::ofstream ofs(output_filename);
+  std::ofstream ofs(output_filename, std::ios::binary);
   if (!ofs.good()) {
     return false;
   }
@@ -298,16 +371,16 @@ bool generate_summary(
       continue;
     }
     auto sizes = get_class_sizes(classes);
-    if (sizes.graph_size == 0) {
+    if (sizes.set_size == 0) {
       continue;
     }
     auto metrics = get_metrics(sizes);
     ofs << escape_filename(filename.c_str())
-        << ',' << sizes.graph_size
+        << ',' << sizes.set_size
         << std::setprecision(std::numeric_limits<double>::digits10)
         << ',' << metrics.entropy
         << ',' << metrics.hellerman
-        << ',' << metrics.hellerman_norm
+        << ',' << metrics.entropy_norm
         << ',' << metrics.singleton_classes << '\n';
   }
   return ofs.good();
@@ -378,6 +451,10 @@ int main(int argc, char** argv) {
         false,
         1,
         "int", cmd);
+    TCLAP::SwitchArg argEdges(
+        "e", "edges",
+        "Compute partitioning of edges instead of nodes.",
+        cmd);
     TCLAP::SwitchArg argHierarchy(
         "t", "hierarchy-tree",
         "Compute hierarchy of nodes based on indistinguishability. With this setting, radius is the maximum depth of the tree.",
@@ -389,10 +466,10 @@ int main(int argc, char** argv) {
         -1,
         "int", cmd);
     TCLAP::SwitchArg argRecompute(
-        "e", "recompute",
+        "p", "recompute",
         "Compute again even if the output file already exists", cmd);
     TCLAP::SwitchArg argRecomputeAutomorphism(
-        "E", "recompute-automorphism",
+        "P", "recompute-automorphism",
         "Compute automorphism again instead of loading from file", cmd);
     TCLAP::SwitchArg argRemoveMultiEdges(
         "R", "remove-multi-edges",
@@ -410,10 +487,6 @@ int main(int argc, char** argv) {
     TCLAP::SwitchArg argEdgeLabels(
         "l", "edge-labels",
         "Take edge labels into account when determining if nodes are equivalent",
-        cmd);
-    TCLAP::SwitchArg argSplitEdgeLabels(
-        "L", "split-edge-labels",
-        "Split graph by edge labels and then merge the results, edge-labels is prefered",
         cmd);
     TCLAP::SwitchArg argNoAutomorphisms(
         "A", "no-automorphisms",
@@ -464,6 +537,7 @@ int main(int argc, char** argv) {
     options.inout_degrees = !argNoInoutDegrees.getValue();
     options.strict = !argNonStrict.getValue();
     options.edge_labels = argEdgeLabels.getValue();
+    task_options.edges = argEdges.getValue();
     task_options.no_automorphisms = argNoAutomorphisms.getValue();
     task_options.hierarchy = argHierarchy.getValue();
     task_options.recompute = argRecompute.getValue();
@@ -490,11 +564,13 @@ int main(int argc, char** argv) {
     }
 
     // Process function, depending on mode of computation, usually won't be split by edges
-    bool split_by_edges = argSplitEdgeLabels.getValue();
-    auto graph_process_func = [&options, &compute_options, &task_options, split_by_edges](
+    if (task_options.edges) {
+      filename_base += "_edges";
+    }
+    auto graph_process_func = [&options, &compute_options, &task_options](
         const GraphAdjacency& graph, const std::string& filename_prefix) {
-      if (split_by_edges) {
-        process_split_by_edges(graph, filename_prefix, options, compute_options, task_options);
+      if (task_options.edges) {
+        process_graph_edges(graph, filename_prefix, options, compute_options, task_options);
       } else {
         process_graph(graph, filename_prefix, options, compute_options, task_options);
       }
