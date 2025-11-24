@@ -11,7 +11,12 @@ All libraries are compiled in, except tbbmalloc, a memory allocation optimisatio
 
 To see an example usage, run the application in `runtime` directory, using arguments
 ```
-graphballs -d 1 -R -t -o output/[name] ./datasets/Countries.csv
+graphballs -d 4 -R -t -o output/[name] ./datasets/Countries.csv
 ```
 
 To see more info on arguments, use `graphballs --help`. 
+
+The feature number 1 has been done, distinguishability of edges can be checked with with
+```
+graphballs -e -d 4 -o output/[name] ./datasets/Countries.csv
+```
