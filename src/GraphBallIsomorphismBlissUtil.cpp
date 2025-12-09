@@ -17,15 +17,33 @@ void graph_to_bliss(const GraphAdjacency& graph, bliss::Digraph& out_g) {
   }
 }
 
+void graph_to_bliss_labels(
+    const GraphAdjacency& graph, bliss::Digraph& out_g) {
+  for (uint32_t i = 0; i < graph.getNumVertices(); ++i) {
+    out_g.add_vertex();
+  }
+  for (uint32_t i = 0; i < graph.getNumVertices(); ++i) {
+    for (auto& adj: graph.getAdjacencyOut(i)) {
+      uint32_t new_id = out_g.add_vertex(adj.edge_label_id);
+      out_g.add_edge(i, new_id);
+      out_g.add_edge(new_id, adj.vertex_id);
+    }
+  }
+}
+
 bool check_isomorphism_bliss(
     bliss::Digraph& g1, bliss::Digraph& g2,
     IdMap& inv_perm2_buf, IdMap& perm_combine) {
+  // Can't have different sizes
+  uint32_t size = g1.get_nof_vertices();
+  if (size != g2.get_nof_vertices()) {
+    return false;
+  }
   // Get canonical permutations
   bliss::Stats stats1;
   bliss::Stats stats2;
   const uint32_t* perm1 = g1.canonical_form(stats1);
   const uint32_t* perm2 = g2.canonical_form(stats2);
-  uint32_t size = g1.get_nof_vertices();
   inv_perm2_buf.resize(size);
   perm_combine.resize(size);
   for (uint32_t i = 0; i < size; ++i) {
@@ -52,7 +70,8 @@ void initialize_bliss_graphs_with_added(
     const GraphAdjacency& graph,
     CheckBallIsomorphismBuffer& buf,
     bliss::Digraph& g1,
-    bliss::Digraph& g2) {
+    bliss::Digraph& g2,
+    bool edge_labels) {
   // Add vertices, color is based on group index
   for (uint32_t i = 0; i < buf.grouped_nodes.size(); ++i) {
     auto& group = buf.grouped_nodes[i];
@@ -64,19 +83,49 @@ void initialize_bliss_graphs_with_added(
     }
   }
   // Add edges, only out edges to not add unnecessary duplicates
-  for (uint32_t i = 0; i < buf.grouped_nodes.size(); ++i) {
-    auto& group = buf.grouped_nodes[i];
-    for (uint32_t idx: group.indices1) {
-      for (auto& adj: graph.getAdjacencyOut(idx)) {
-        if (buf.added1[adj.vertex_id]) {
-          g1.add_edge(buf.node_map1[idx], buf.node_map1[adj.vertex_id]);
+  if (edge_labels) {
+    // If recognising edge labels, add special colored vertices
+    // in between edges to differentiate them
+    uint32_t color_offset = buf.grouped_nodes.size();
+    for (uint32_t i = 0; i < buf.grouped_nodes.size(); ++i) {
+      auto& group = buf.grouped_nodes[i];
+      for (uint32_t idx: group.indices1) {
+        for (auto& adj: graph.getAdjacencyOut(idx)) {
+          if (buf.added1[adj.vertex_id]) {
+            uint32_t new_id = g1.add_vertex(
+                color_offset + adj.edge_label_id);
+            g1.add_edge(buf.node_map1[idx], new_id);
+            g1.add_edge(new_id, buf.node_map1[adj.vertex_id]);
+          }
+        }
+      }
+      for (uint32_t idx: group.indices2) {
+        for (auto& adj: graph.getAdjacencyOut(idx)) {
+          if (buf.added2[adj.vertex_id]) {
+            uint32_t new_id = g2.add_vertex(
+                color_offset + adj.edge_label_id);
+            g2.add_edge(buf.node_map2[idx], new_id);
+            g2.add_edge(new_id, buf.node_map2[adj.vertex_id]);
+          }
         }
       }
     }
-    for (uint32_t idx: group.indices2) {
-      for (auto& adj: graph.getAdjacencyOut(idx)) {
-        if (buf.added2[adj.vertex_id]) {
-          g2.add_edge(buf.node_map2[idx], buf.node_map2[adj.vertex_id]);
+  } else {
+    // Not recognising edge labels
+    for (uint32_t i = 0; i < buf.grouped_nodes.size(); ++i) {
+      auto& group = buf.grouped_nodes[i];
+      for (uint32_t idx: group.indices1) {
+        for (auto& adj: graph.getAdjacencyOut(idx)) {
+          if (buf.added1[adj.vertex_id]) {
+            g1.add_edge(buf.node_map1[idx], buf.node_map1[adj.vertex_id]);
+          }
+        }
+      }
+      for (uint32_t idx: group.indices2) {
+        for (auto& adj: graph.getAdjacencyOut(idx)) {
+          if (buf.added2[adj.vertex_id]) {
+            g2.add_edge(buf.node_map2[idx], buf.node_map2[adj.vertex_id]);
+          }
         }
       }
     }
@@ -87,7 +136,12 @@ void update_bliss_graphs_with_recent_surface(
     const GraphAdjacency& graph,
     CheckBallIsomorphismBuffer& buf,
     bliss::Digraph& g1,
-    bliss::Digraph& g2) {
+    bliss::Digraph& g2,
+    bool edge_labels) {
+  uint32_t last_layer_id = g1.get_nof_vertices();
+  if (last_layer_id != g2.get_nof_vertices()) {
+    throw std::runtime_error("This should never happen");
+  }
   // Add vertices, color is based on group index
   for (auto i = (uint32_t) buf.grouped_nodes.size() - buf.num_last_added_groups;
        i < buf.grouped_nodes.size(); ++i) {
@@ -99,31 +153,87 @@ void update_bliss_graphs_with_recent_surface(
       buf.node_map2[idx] = g2.add_vertex(i);
     }
   }
-  // Add edges, don't need to worry about duplicates, it's handled by bliss
-  for (uint32_t i = (uint32_t) buf.grouped_nodes.size() - buf.num_last_added_groups;
-       i < buf.grouped_nodes.size(); ++i) {
-    auto& group = buf.grouped_nodes[i];
-    for (uint32_t idx: group.indices1) {
-      for (auto& adj: graph.getAdjacencyIn(idx)) {
-        if (buf.added1[adj.vertex_id]) {
-          g1.add_edge(buf.node_map1[adj.vertex_id], buf.node_map1[idx]);
+  if (edge_labels) {
+    // If recognising edge labels, add special colored vertices
+    // in between edges to differentiate them
+    // Sadly in this mode I must recognise what edges I can't add twice
+    uint32_t color_offset = graph.getNumVertices();
+    for (uint32_t i = (uint32_t) buf.grouped_nodes.size() - buf.num_last_added_groups;
+         i < buf.grouped_nodes.size(); ++i) {
+      auto& group = buf.grouped_nodes[i];
+      for (uint32_t idx: group.indices1) {
+        for (auto& adj: graph.getAdjacencyIn(idx)) {
+          // Additional check for one side to prevent duplicate adds
+          if (buf.added1[adj.vertex_id]
+              && buf.node_map1[adj.vertex_id] < last_layer_id) {
+            uint32_t new_id = g1.add_vertex(
+                color_offset + adj.edge_label_id);
+            g1.add_edge(buf.node_map1[adj.vertex_id], new_id);
+            g1.add_edge(new_id, buf.node_map1[idx]);
+          }
+        }
+        for (auto& adj: graph.getAdjacencyOut(idx)) {
+          if (buf.added1[adj.vertex_id]) {
+            uint32_t new_id = g1.add_vertex(
+                color_offset + adj.edge_label_id);
+            g1.add_edge(buf.node_map1[idx], new_id);
+            g1.add_edge(new_id, buf.node_map1[adj.vertex_id]);
+          }
         }
       }
-      for (auto& adj: graph.getAdjacencyOut(idx)) {
-        if (buf.added1[adj.vertex_id]) {
-          g1.add_edge(buf.node_map1[idx], buf.node_map1[adj.vertex_id]);
+      for (uint32_t idx: group.indices2) {
+        for (auto& adj: graph.getAdjacencyIn(idx)) {
+          // Additional check for one side to prevent duplicate adds
+          if (buf.added2[adj.vertex_id]
+              && buf.node_map2[adj.vertex_id] < last_layer_id) {
+            uint32_t new_id = g2.add_vertex(
+                color_offset + adj.edge_label_id);
+            g2.add_edge(buf.node_map2[adj.vertex_id], new_id);
+            g2.add_edge(new_id, buf.node_map2[idx]);
+          }
+        }
+        for (auto& adj: graph.getAdjacencyOut(idx)) {
+          if (buf.added2[adj.vertex_id]) {
+            uint32_t new_id = g2.add_vertex(
+                color_offset + adj.edge_label_id);
+            g2.add_edge(buf.node_map2[idx], new_id);
+            g2.add_edge(new_id, buf.node_map2[adj.vertex_id]);
+          }
         }
       }
     }
-    for (uint32_t idx: group.indices2) {
-      for (auto& adj: graph.getAdjacencyIn(idx)) {
-        if (buf.added2[adj.vertex_id]) {
-          g2.add_edge(buf.node_map2[adj.vertex_id], buf.node_map2[idx]);
+  } else {
+    // Not recognising edge labels
+    // Add edges, don't need to worry about duplicates, it's handled by bliss
+    for (uint32_t i = (uint32_t) buf.grouped_nodes.size() - buf.num_last_added_groups;
+         i < buf.grouped_nodes.size(); ++i) {
+      auto& group = buf.grouped_nodes[i];
+      for (uint32_t idx: group.indices1) {
+        for (auto& adj: graph.getAdjacencyIn(idx)) {
+          // Experimental duplicate prevention, it's very light to check
+          if (buf.added1[adj.vertex_id]
+              && buf.node_map1[adj.vertex_id] < last_layer_id) {
+            g1.add_edge(buf.node_map1[adj.vertex_id], buf.node_map1[idx]);
+          }
+        }
+        for (auto& adj: graph.getAdjacencyOut(idx)) {
+          if (buf.added1[adj.vertex_id]) {
+            g1.add_edge(buf.node_map1[idx], buf.node_map1[adj.vertex_id]);
+          }
         }
       }
-      for (auto& adj: graph.getAdjacencyOut(idx)) {
-        if (buf.added2[adj.vertex_id]) {
-          g2.add_edge(buf.node_map2[idx], buf.node_map2[adj.vertex_id]);
+      for (uint32_t idx: group.indices2) {
+        for (auto& adj: graph.getAdjacencyIn(idx)) {
+          // Experimental duplicate prevention, it's very light to check
+          if (buf.added2[adj.vertex_id]
+              && buf.node_map2[adj.vertex_id] < last_layer_id) {
+            g2.add_edge(buf.node_map2[adj.vertex_id], buf.node_map2[idx]);
+          }
+        }
+        for (auto& adj: graph.getAdjacencyOut(idx)) {
+          if (buf.added2[adj.vertex_id]) {
+            g2.add_edge(buf.node_map2[idx], buf.node_map2[adj.vertex_id]);
+          }
         }
       }
     }
@@ -134,7 +244,8 @@ void initialize_bliss_graphs_with_added_edges(
     const GraphEnhancedEdgeRepr& graph_edges,
     CheckBallIsomorphismBuffer& buf,
     bliss::Digraph& g1,
-    bliss::Digraph& g2) {
+    bliss::Digraph& g2,
+    bool edge_labels) {
   // Add vertices, color is based on group index
   for (uint32_t i = 0; i < buf.grouped_nodes.size(); ++i) {
     auto& group = buf.grouped_nodes[i];
@@ -146,13 +257,31 @@ void initialize_bliss_graphs_with_added_edges(
     }
   }
   // Add edges
-  for (uint32_t idx: buf.added_edges1_list) {
-    auto& edge = graph_edges.getEdgeById(idx);
-    g1.add_edge(buf.node_map1[edge.from_id], buf.node_map1[edge.to_id]);
-  }
-  for (uint32_t idx: buf.added_edges2_list) {
-    auto& edge = graph_edges.getEdgeById(idx);
-    g2.add_edge(buf.node_map2[edge.from_id], buf.node_map2[edge.to_id]);
+  if (edge_labels) {
+    uint32_t color_offset = buf.grouped_nodes.size();
+    for (uint32_t idx: buf.added_edges1_list) {
+      auto& edge = graph_edges.getEdgeById(idx);
+      uint32_t new_id = g1.add_vertex(
+          color_offset + edge.edge_label_id);
+      g1.add_edge(buf.node_map1[edge.from_id], new_id);
+      g1.add_edge(new_id, buf.node_map1[edge.to_id]);
+    }
+    for (uint32_t idx: buf.added_edges2_list) {
+      auto& edge = graph_edges.getEdgeById(idx);
+      uint32_t new_id = g2.add_vertex(
+          color_offset + edge.edge_label_id);
+      g2.add_edge(buf.node_map2[edge.from_id], new_id);
+      g2.add_edge(new_id, buf.node_map2[edge.to_id]);
+    }
+  } else {
+    for (uint32_t idx: buf.added_edges1_list) {
+      auto& edge = graph_edges.getEdgeById(idx);
+      g1.add_edge(buf.node_map1[edge.from_id], buf.node_map1[edge.to_id]);
+    }
+    for (uint32_t idx: buf.added_edges2_list) {
+      auto& edge = graph_edges.getEdgeById(idx);
+      g2.add_edge(buf.node_map2[edge.from_id], buf.node_map2[edge.to_id]);
+    }
   }
 }
 

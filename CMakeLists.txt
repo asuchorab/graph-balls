@@ -11,6 +11,7 @@ foreach (OUTPUTCONFIG IN ITEMS Debug Release)
 endforeach ()
 
 option(USE_TBBMALLOC "Use TBB memory allocator" OFF)
+option(USE_CRASH_HANDLER "Use crash handler" ON)
 
 set(EXECUTABLE_NAME graphballs)
 
@@ -36,8 +37,16 @@ add_executable(${EXECUTABLE_NAME}
         src/GraphPartitioning.h
         src/GraphBallsUtil.cpp
         src/GraphBallsUtil.h
-        src/GraphPartitioningThreadPool.cpp
-        src/GraphPartitioningThreadPool.h
+        src/GraphEnhancedEdgeRepr.cpp
+        src/GraphEnhancedEdgeRepr.h
+        src/GraphBallIsomorphismHelpers.cpp
+        src/GraphBallIsomorphismHelpers.h
+        src/GraphBallIsomorphismBlissUtil.cpp
+        src/GraphBallIsomorphismBlissUtil.h
+        src/SetPartitioningThreadPool.cpp
+        src/SetPartitioningThreadPool.h
+        src/GraphPartitioningMultithread.cpp
+        src/GraphPartitioningMultithread.h
 )
 add_subdirectory(external/bliss-0.77)
 target_include_directories(${EXECUTABLE_NAME} PRIVATE external/bliss-0.77/src)
@@ -57,6 +66,7 @@ if (USE_TBBMALLOC)
 else ()
     message("not use tbbmalloc")
 endif ()
+
 unset(USE_TBBMALLOC CACHE)
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

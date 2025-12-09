@@ -28,6 +28,17 @@ SetPartitionMap automprhism_groups_bliss(const GraphAdjacency& graph) {
   return partition_map;
 }
 
+SetPartitionMap automprhism_groups_bliss_labels(const GraphAdjacency& graph) {
+  bliss::Stats stats;
+  bliss::Digraph g;
+  graph_to_bliss_labels(graph, g);
+  auto partition_map = identity_partition_map(g.get_nof_vertices());
+  g.find_automorphisms(stats, bliss_automorphism_callback(partition_map));
+  partition_map.resize(graph.getNumVertices());
+  finalize_bliss_automorphism_map(partition_map, true);
+  return partition_map;
+}
+
 SetPartition partition_graph(
     const GraphAdjacency& graph, bool verbose,
     const CheckBallIsomorphismOptions& options,
@@ -483,7 +494,6 @@ SetPartitionSizes get_class_sizes(const SetPartition& equivalent_classes) {
   }
   return ret;
 }
-
 
 GraphPartitionMetrics get_metrics(const SetPartitionSizes& sizes) {
   GraphPartitionMetrics ret;

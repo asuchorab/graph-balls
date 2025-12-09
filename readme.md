@@ -16,7 +16,14 @@ graphballs -d 4 -R -t -o output/[name] ./datasets/Countries.csv
 
 To see more info on arguments, use `graphballs --help`. 
 
-The feature number 1 has been done, distinguishability of edges can be checked with with
+The feature number 1 has been done, distinguishability of edges can be checked with with -e flag:
 ```
 graphballs -e -d 4 -o output/[name] ./datasets/Countries.csv
+```
+
+The features number 2 and 3 are partially done, handling of multiedges and edge labels is controlled with -R and -l. Not working for edge-based tasks yet.
+```
+graphballs -d 4 -R -t -o output/[name] ./datasets/AristoV4.csv
+graphballs -d 4 -t -o output/[name] ./datasets/AristoV4.csv
+graphballs -d 4 -l -t -o output/[name] ./datasets/AristoV4.csv
 ```

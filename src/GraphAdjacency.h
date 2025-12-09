@@ -123,12 +123,15 @@ public:
   void printFull(std::ostream& out) const;
 
   /**
-   * Make it so the graph does not contain multiedges
-   * If replace_type is true, then each unique combination of edge labels,
-   * generates a new unique edge lale from their combination
-   * TODO: test the new mechanism
+   * Make it so the graph does not contain multiedges, for each unique
+   * combination of edge labels generates a new unique edge label
+   * from their combination.
+   * If degenerate_labels is true, then the resulting edge labels will instead
+   * just be the amount of multiedges between a pair, with exact edge labels
+   * forgotten.
+   * Returns the number of merged multiedges.
    */
-  uint32_t removeMultiEdges(bool replace_type = true);
+  uint32_t mergeMultiEdges(bool degenerate_labels = false);
 
   /**
    * Return number of nodes in graph
@@ -143,6 +146,11 @@ public:
   uint32_t getNumEdgeLabels() const {
     return (uint32_t) edge_label_pool.size();
   }
+
+  /**
+   * Return number of edges, this is not a constant time operation
+   */
+  uint32_t getNumEdges() const;
 
   /**
    * Get edges pointing towards the node by id

@@ -21,6 +21,12 @@ namespace graphballs {
 void graph_to_bliss(const GraphAdjacency& graph, bliss::Digraph& g);
 
 /**
+ * Converts the graph to the bliss graph format, taking into account
+ * edge labels, it substitutes differently colored edges with colored vertices
+ */
+void graph_to_bliss_labels(const GraphAdjacency& graph, bliss::Digraph& g);
+
+/**
  * Check if a pair of graphs is isomorphic, inv_perm2_buf and perm_combine
  * can be any vector, it's to avoid allocations for repeated calls
  */
@@ -43,7 +49,8 @@ void initialize_bliss_graphs_with_added(
     const GraphAdjacency& graph,
     CheckBallIsomorphismBuffer& buf,
     bliss::Digraph& g1,
-    bliss::Digraph& g2);
+    bliss::Digraph& g2,
+    bool edge_labels = false);
 
 /**
  * Update a pair of graphs based on nodes added in the last iteration from buf
@@ -52,7 +59,8 @@ void update_bliss_graphs_with_recent_surface(
     const GraphAdjacency& graph,
     CheckBallIsomorphismBuffer& buf,
     bliss::Digraph& g1,
-    bliss::Digraph& g2);
+    bliss::Digraph& g2,
+    bool edge_labels = false);
 
 /**
  * Create a pair of graphs based on added nodes and edges from buf
@@ -61,7 +69,8 @@ void initialize_bliss_graphs_with_added_edges(
     const GraphEnhancedEdgeRepr& graph_edges,
     CheckBallIsomorphismBuffer& buf,
     bliss::Digraph& g1,
-    bliss::Digraph& g2);
+    bliss::Digraph& g2,
+    bool edge_labels = false);
 }
 
 

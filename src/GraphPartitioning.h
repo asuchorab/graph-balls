@@ -17,6 +17,14 @@ namespace graphballs {
 SetPartitionMap automprhism_groups_bliss(const GraphAdjacency& graph);
 
 /**
+ * Compute partition of the nodes based on automorphism groups,
+ * (comparing with unlimited radius), directly using the bliss library,
+ * taking into account edge labels.
+ * This is rather fast and is a beginning point for other computations
+ */
+SetPartitionMap automprhism_groups_bliss_labels(const GraphAdjacency& graph);
+
+/**
  * Compute partition of the nodes, using given options (including radius)
  * in a simple single threaded loop, mostly unused
  */

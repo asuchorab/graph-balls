@@ -354,9 +354,33 @@ void GraphAdjacency::printFull(std::ostream& out) const {
     }
     out << "]\n";
   }
+  for (uint32_t i = 0; i < getNumVertices(); ++i) {
+    auto& adj_out = getAdjacencyOut(i);
+    for (auto& adj: adj_out) {
+      out << getVertexLabel(i) << ","
+          << getEdgeLabel(adj.edge_label_id) << ","
+          << getVertexLabel(adj.vertex_id) << "\n";
+    }
+  }
+  std::cout<<"Inverse:\n";
+  for (uint32_t i = 0; i < getNumVertices(); ++i) {
+    auto& adj_in = getAdjacencyIn(i);
+    for (auto& adj: adj_in) {
+      out << getVertexLabel(adj.vertex_id) << ","
+          << getEdgeLabel(adj.edge_label_id) << ","
+          << getVertexLabel(i) << "\n";
+    }
+  }
 }
 
-uint32_t GraphAdjacency::removeMultiEdges(bool replace_type) {
+uint32_t GraphAdjacency::mergeMultiEdges(bool degenerate_labels) {
+  // If degenerating labels, throw out all edge labels
+  if (degenerate_labels) {
+    std::vector<std::string> empty;
+    edge_label_pool.swap(empty);
+    std::unordered_map<std::string, uint32_t> empty_map;
+    edge_label_pool_map.swap(empty_map);
+  }
   uint32_t remove_count = 0;
   std::vector<uint32_t> labels_buf;
   for (uint32_t v_id = 0; v_id < getNumVertices(); ++v_id) {
@@ -396,23 +420,27 @@ uint32_t GraphAdjacency::removeMultiEdges(bool replace_type) {
       // On end of array or when new vertex id is noticed, process
       if (adj_idx == adj_in.size() || adj_in[adj_idx].vertex_id != last_id) {
         // If accumulated more than 1 past labels of one vertex,
-        // do the merge
-        if (labels_buf.size() > 1) {
-          remove_count += labels_buf.size() - 1;
-          uint32_t new_label_id;
-          if (replace_type) {
+        // do the merge, if degenerating labels, always do the merge
+        if (labels_buf.size() > 1
+            || (degenerate_labels && labels_buf.size() == 1)) {
+          if (labels_buf.size() > 1) {
+            remove_count++;
+          }
+          // Finding new edge label
+          std::string new_label;
+          if (degenerate_labels) {
+            new_label = std::to_string(labels_buf.size());
+          } else {
             std::sort(labels_buf.begin(), labels_buf.end());
-            std::string new_label = getEdgeLabel(labels_buf[0]);
+            new_label = getEdgeLabel(labels_buf[0]);
             for (uint32_t i = 1; i < labels_buf.size(); ++i) {
               new_label += "_merge_";
               new_label += getEdgeLabel(labels_buf[i]);
             }
-            new_label_id = addOrGetEdgeLabelId(new_label);
-          } else {
-            new_label_id = labels_buf[0];
           }
-          uint32_t begin_idx = adj_idx - labels_buf.size();
+          uint32_t new_label_id = addOrGetEdgeLabelId(new_label);
           // Erase corresponding adjacencies from other node
+          uint32_t begin_idx = adj_idx - labels_buf.size();
           for (uint32_t i = adj_idx - 1; i > begin_idx; --i) {
             erase_from_other_node(adj_in[i]);
           }
@@ -440,6 +468,14 @@ uint32_t GraphAdjacency::removeMultiEdges(bool replace_type) {
     }
   }
   return remove_count;
+}
+
+uint32_t GraphAdjacency::getNumEdges() const {
+  uint32_t num_edges = 0;
+  for (uint32_t i = 0; i < adjacency_out.size(); ++i) {
+    num_edges += adjacency_out[i].size();
+  }
+  return num_edges;
 }
 
 std::vector<uint32_t> GraphAdjacency::getAdjacentVerticesIn(uint32_t vertex_id) const {

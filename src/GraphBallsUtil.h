@@ -112,13 +112,28 @@ struct GraphComputeOptions {
  * Distinguishes between various kinds of tasks the application can do
  */
 struct GraphTaskOptions {
+  /// Whether to compute distinguishability of edges, if false then nodes
   bool edges = false;
+  /// Whether to use hierarchical approach
   bool hierarchy = false;
-  bool recompute = false;
-  bool recompute_automorphism = false;
+  /// Whether to take edge labels into account, notice that it is distinct
+  /// from CheckBallIsomorphismOptions::edge_labels as some tasks may use
+  /// the latter even if this is false
+  bool edge_labels = false;
+  /// Whether to remove multiedges, if true, the algorithm will treat any
+  /// pair of vertices with a multiedge between them as just having a single
+  /// connection. If edge_labels is true, this has no effect because it
+  /// will internally remove multiedges anyway with an unique new label
+  /// made from combination of edges before.
   bool remove_multiedges = false;
+  /// Whether to force recomputation of already present artifacts
+  bool recompute = false;
+  /// Whether to force recomputation of already present automorphism partition
+  bool recompute_automorphism = false;
+  ///
   bool print_no_metrics = false;
   bool print_class_data = false;
+  bool print_graph = false;
   bool no_automorphisms = false;
 };
 
@@ -136,7 +151,7 @@ struct CheckBallIsomorphismOptions {
   /// graph, doesn't influence correctness on all but last radius,
   /// faster to not care
   bool added_inout_degrees = false;
-  /// Whether to care about edge labels when checking, not done fully yet
+  /// Whether to care about edge labels when checking
   bool edge_labels = false;
   /// Strict will call isomorphism checks, not strict will only match sizes
   /// and degrees (if inout_degrees)

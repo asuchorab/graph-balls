@@ -33,6 +33,7 @@ std::string get_radius_filename(const std::string& prefix, uint32_t radius) {
 // or don't, depending on whether the options permit that
 SetPartition load_aut_if_possible(
     const GraphAdjacency& graph, const std::string& corrected_prefix,
+    const CheckBallIsomorphismOptions& options,
     const GraphComputeOptions& compute_options,
     const GraphTaskOptions& task_options) {
   SetPartition aut_classes;
@@ -44,7 +45,12 @@ SetPartition load_aut_if_possible(
       // Else need to compute the automorphism groups
       // If allowed to use bliss for automorphism, compute it
       auto time_start = std::chrono::high_resolution_clock::now();
-      auto aut_map = automprhism_groups_bliss(graph);
+      SetPartitionMap aut_map;
+      if (options.edge_labels) {
+        aut_map = automprhism_groups_bliss_labels(graph);
+      } else {
+        aut_map = automprhism_groups_bliss(graph);
+      }
       aut_classes = partition_from_map(aut_map);
       std::chrono::duration<double> duration =
           std::chrono::high_resolution_clock::now() - time_start;
@@ -88,19 +94,17 @@ std::string get_corrected_prefix(
     const GraphTaskOptions& task_options) {
   std::stringstream ss;
   ss << prefix;
-  if (task_options.remove_multiedges) {
+  if (task_options.edge_labels) {
+    ss << "_edgelabels";
+  } else if (task_options.remove_multiedges) {
     ss << "_rmmulti";
   }
-  if (options.edge_labels) {
-    ss << "_edgelabels";
+  if (!options.strict) {
+    ss << "_nonstrict";
   }
+  // TODO: Do I need that? The results should never differ and it's pointless
   if (!options.inout_degrees) {
     ss << "_noinout";
-  }
-  if (options.strict) {
-    ss << "_strict";
-  } else {
-    ss << "_nonstrict";
   }
   return ss.str();
 }
@@ -128,8 +132,8 @@ SetPartition process_graph(
   }
 
   // Generate file names for associated files
-  std::string labels_filename = filename_prefix + "_labels.txt";
-  std::string hierarchy_filename = filename_prefix + "_hierarchy.csv";
+  std::string labels_filename = corrected_prefix + "_labels.txt";
+  std::string hierarchy_filename = corrected_prefix + "_hierarchy.csv";
 
   // Generate a file for mapping numerical ids to node labels
   // for the graph
@@ -145,7 +149,7 @@ SetPartition process_graph(
   if (task_options.hierarchy) {
     // Load automorphism partition
     SetPartition aut_classes = load_aut_if_possible(
-        graph, corrected_prefix, compute_options, task_options);
+        graph, corrected_prefix, options, compute_options, task_options);
 
     // The main chunk of computation,
     GraphAdjacency out_graph = distinguishability_hierarchy_multithread(
@@ -193,7 +197,7 @@ SetPartition process_graph(
       // Else need to compute the result
       // If Allowed to load automorphism groups by options, do that
       SetPartition aut_classes = load_aut_if_possible(
-          graph, corrected_prefix, compute_options, task_options);
+          graph, corrected_prefix, options, compute_options, task_options);
 
       // If radius unspecified and the automorphism is available, just use it
       if ((int) options.radius < 0 && !aut_classes.empty()) {
@@ -240,8 +244,8 @@ SetPartition process_graph_edges(
   }
 
   // Generate file names for associated files
-  std::string labels_filename = filename_prefix + "_labels.txt";
-  std::string hierarchy_filename = filename_prefix + "_hierarchy.csv";
+  std::string labels_filename = corrected_prefix + "_labels.txt";
+  std::string hierarchy_filename = corrected_prefix + "_hierarchy.csv";
 
   // Generate a file for mapping numerical ids to node labels
   // for the graph
@@ -498,9 +502,12 @@ int main(int argc, char** argv) {
     TCLAP::SwitchArg argQuietPartition(
         "Q", "quiet-partition",
         "Don't print summary of the partition", cmd);
-    TCLAP::SwitchArg argFullClassData(
-        "", "full-class-data",
+    TCLAP::SwitchArg argPrintClassData(
+        "", "print-class-data",
         "Print full classes data, may be very taxing for big graphs", cmd);
+    TCLAP::SwitchArg argPrintGraph(
+        "", "print-graph",
+        "List full graph structure, after initial processing, may be very taxing for big graphs", cmd);
     TCLAP::ValueArg<int> argThreads(
         "d", "threads",
         "Number of threads, negative means maximum for this CPU, default: -1",
@@ -536,14 +543,15 @@ int main(int argc, char** argv) {
     options.added_inout_degrees = argAddedInoutDegrees.getValue();
     options.inout_degrees = !argNoInoutDegrees.getValue();
     options.strict = !argNonStrict.getValue();
-    options.edge_labels = argEdgeLabels.getValue();
+    task_options.edge_labels = argEdgeLabels.getValue();
+    task_options.remove_multiedges = argRemoveMultiEdges.getValue();
     task_options.edges = argEdges.getValue();
     task_options.no_automorphisms = argNoAutomorphisms.getValue();
     task_options.hierarchy = argHierarchy.getValue();
     task_options.recompute = argRecompute.getValue();
     task_options.recompute_automorphism = argRecomputeAutomorphism.getValue();
-    task_options.remove_multiedges = argRemoveMultiEdges.getValue();
-    task_options.print_class_data = argFullClassData.getValue();
+    task_options.print_class_data = argPrintClassData.getValue();
+    task_options.print_graph = argPrintGraph.getValue();
     compute_options.num_threads = argThreads.getValue();
     compute_options.verbose = !argQuiet.getValue();
     compute_options.print_partition = !argQuietPartition.getValue();
@@ -555,13 +563,39 @@ int main(int argc, char** argv) {
 
     // Load graph from files
     auto graph = GraphAdjacency::loadFiles(filenames);
-    if (task_options.remove_multiedges) {
-      uint32_t old_edge_labels = graph.getNumEdgeLabels();
-      auto count = graph.removeMultiEdges(true);
-      std::cout << "Removed " << count << " multiedges, "
-          << graph.getNumEdgeLabels() - old_edge_labels << " new merged labels\n"
-          << std::flush;
+    // Graph processing, need to remove multiedges depending on the task
+    // It turns out that we always want to remove multiedges
+    uint32_t old_edge_labels = graph.getNumEdgeLabels();
+    uint32_t old_edges = graph.getNumEdges();
+    uint32_t merge_amount = 0;
+    options.edge_labels = task_options.edge_labels;
+    // TODO: Fix the effect of merging multiedges on entropy in edge ball task
+    if (task_options.edge_labels) {
+      // If taking edge labels into account, simply merge the multi edges,
+      // Each combination of edges before will result in a different label
+      merge_amount = graph.mergeMultiEdges(false);
+      //
+    } else if (task_options.remove_multiedges) {
+      // If not taking edge labels into account, must merge multi edges
+      // with label degeneration (or not but it's faster that way), and
+      // run the task without taking edge labels into account
+      merge_amount = graph.mergeMultiEdges(true);
+      //
+    } else {
+      // If not taking edge labels into account, merge multi edges with
+      // label degeneration, with new labels depending on number of edges
+      // before, computing this task with edge labels is equivalent to
+      // computing on the original graph with multiedges without edge labels
+      merge_amount = graph.mergeMultiEdges(true);
+      // Adjust the options.edge_labels (not task_options) because
+      // multiedge counts needs to be recognised, but the output filename
+      // should not reflect that
+      options.edge_labels = true;
     }
+    std::cout << "Merged " << merge_amount << " multiedges, old edges: "
+        << old_edges << ", new edges: " << graph.getNumEdges()
+        << ", old edge labels: " << old_edge_labels << ", new edge labels: "
+        << graph.getNumEdgeLabels() << "\n" << std::flush;
 
     // Process function, depending on mode of computation, usually won't be split by edges
     if (task_options.edges) {
@@ -578,24 +612,34 @@ int main(int argc, char** argv) {
 
     // If the whole graph is to be processed, just call process
     if (components == 0) {
+      if (task_options.print_graph) {
+        std::cout << "Full graph:\n";
+        graph.printFull(std::cout);
+      }
       graph_process_func(graph, filename_base);
     } else {
       // Else process individual graph components
       // Print info about the whole graph
       if (compute_options.verbose) {
         std::cout << "Full graph: ";
+        if (task_options.print_graph) {
+          graph.printFull(std::cout);
+        }
         graph.printBasicInfo(std::cout);
         std::cout << '\n';
       }
       // Process for each graph component
       graph.forEachGraphComponent(
           components, argComponentSize.getValue(),
-          [&graph_process_func, &filename_base]
+          [&task_options, &graph_process_func, &filename_base]
       (const GraphAdjacency& graph, int component_idx) {
             if (component_idx > 0) {
               std::cout << '\n';
             }
             std::cout << "Component " << component_idx << ":\n" << std::flush;
+            if (task_options.print_graph) {
+              graph.printFull(std::cout);
+            }
             std::string filename_conponent_prefix =
                 filename_base + "_comp" + std::to_string(component_idx);
             graph_process_func(graph, filename_conponent_prefix);

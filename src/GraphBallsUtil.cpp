@@ -154,9 +154,20 @@ PartitionOverview::PartitionOverview(
 std::ostream& operator<<(std::ostream& out, const PartitionOverview& obj) {
   auto sizes = get_class_sizes(obj.classes);
   if (!obj.only_metrics) {
+    out << "Sizes, counts: [";
+    bool first = true;
     for (auto& pair: sizes.classes) {
-      out << "Size: " << pair.first << ", count: " << pair.second << "\n";
+      if (first) {
+        first = false;
+      } else {
+        out << ", ";
+      }
+      out << "(" << pair.first << ", " << pair.second << ")";
     }
+    out << "]\n";
+    // for (auto& pair: sizes.classes) {
+    //   out << "Size: " << pair.first << ", count: " << pair.second << "\n";
+    // }
   }
   auto metrics = get_metrics(sizes);
   out << std::setprecision(std::numeric_limits<double>::digits10)

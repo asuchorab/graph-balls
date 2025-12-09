@@ -55,8 +55,15 @@ bool check_ball_isomorphism(
     return true;
   }
   // Optimization - check the inout degrees of both nodes right away
-  if (property_hash(graph, node1) != property_hash(graph, node2)) {
-    return false;
+  if (options.edge_labels) {
+    std::map<uint32_t, uint32_t> buf;
+    if (property_hash_labels(graph, node1, buf) != property_hash_labels(graph, node2, buf)) {
+      return false;
+    }
+  } else {
+    if (property_hash(graph, node1) != property_hash(graph, node2)) {
+      return false;
+    }
   }
   std::unique_ptr<CheckBallIsomorphismBuffer> buffer_owned;
   if (!buffer) {
@@ -104,7 +111,8 @@ bool check_ball_isomorphism(
     stats.checked_isomorphisms++;
     bliss::Digraph g1;
     bliss::Digraph g2;
-    initialize_bliss_graphs_with_added(graph, *buffer, g1, g2);
+    initialize_bliss_graphs_with_added(
+      graph, *buffer, g1, g2, options.edge_labels);
     if (!check_isomorphism_bliss(g1, g2, buffer->inv_perm2, buffer->perm_combine)) {
       result = false;
     }
@@ -167,7 +175,7 @@ uint32_t get_ball_indistinguishability(
       // create_bliss_graphs_with_two_recent_surfaces(
       //     graph, *buffer, g1, g2);
       update_bliss_graphs_with_recent_surface(
-          graph, *buffer, g1, g2);
+          graph, *buffer, g1, g2, options.edge_labels);
       stats.checked_isomorphisms++;
       if (!check_isomorphism_bliss(g1, g2, buffer->inv_perm2, buffer->perm_combine)) {
         break;
@@ -252,7 +260,8 @@ bool check_edge_ball_isomorphism(
     stats.checked_isomorphisms++;
     bliss::Digraph g1;
     bliss::Digraph g2;
-    initialize_bliss_graphs_with_added_edges(graph_edges, *buffer, g1, g2);
+    initialize_bliss_graphs_with_added_edges(
+        graph_edges, *buffer, g1, g2, options.edge_labels);
     if (!check_isomorphism_bliss(g1, g2, buffer->inv_perm2, buffer->perm_combine)) {
       result = false;
     }
